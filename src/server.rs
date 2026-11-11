@@ -31,8 +31,8 @@ impl App {
             now,
             config,
             prayers: &prayers,
-            weather: self.sources.weather.as_ref(),
-            radar: self.sources.radar_map.as_ref(),
+            weather: self.sources.weather(),
+            radar: self.sources.radar(),
         })
     }
 }

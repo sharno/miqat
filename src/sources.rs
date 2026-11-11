@@ -3,9 +3,8 @@
 use chrono::{DateTime, Duration, Utc};
 
 use crate::config::Config;
-use crate::image::Gray;
 use crate::layout;
-use crate::radar::{RadarClient, RadarImage, Viewport};
+use crate::radar::{Basemap, RadarClient, RadarImage, Viewport};
 use crate::weather::{self, Weather};
 
 #[derive(Debug, Clone)]
@@ -29,11 +28,17 @@ pub struct Sources {
     agent: ureq::Agent,
     radar: RadarClient,
     viewport: Viewport,
-    pub weather: Option<Snapshot<Weather>>,
-    /// Radar already composited over the basemap.
-    pub radar_map: Option<Snapshot<RadarImage>>,
-    /// Static; fetched once per process.
-    basemap: Option<Gray>,
+    weather: Option<Snapshot<Weather>>,
+    radar_state: RadarState,
+}
+
+/// Radar needs the static basemap first; it is fetched once per process.
+enum RadarState {
+    NoBasemap,
+    Ready {
+        basemap: Basemap,
+        latest: Option<Snapshot<RadarImage>>,
+    },
 }
 
 impl Sources {
@@ -49,8 +54,19 @@ impl Sources {
             agent,
             viewport: Viewport::centered(&config.location, config.radar.zoom, width, height),
             weather: None,
-            radar_map: None,
-            basemap: None,
+            radar_state: RadarState::NoBasemap,
+        }
+    }
+
+    pub fn weather(&self) -> Option<&Snapshot<Weather>> {
+        self.weather.as_ref()
+    }
+
+    /// Radar already drawn over the basemap.
+    pub fn radar(&self) -> Option<&Snapshot<RadarImage>> {
+        match &self.radar_state {
+            RadarState::NoBasemap => None,
+            RadarState::Ready { latest, .. } => latest.as_ref(),
         }
     }
 
@@ -76,25 +92,42 @@ impl Sources {
                 Err(e) => eprintln!("weather: {e:#}"),
             }
         }
-        if self.basemap.is_none() {
-            match self.radar.basemap(&self.viewport) {
-                Ok(map) => self.basemap = Some(map),
-                Err(e) => eprintln!("basemap: {e:#}"),
-            }
-        }
-        if let Some(basemap) = &self.basemap
-            && is_due(&self.radar_map, now, RADAR_EVERY)
-        {
-            match self.radar.latest(&self.viewport) {
-                Ok(radar) => {
-                    let map = crate::radar::overlay(basemap, &radar.map);
-                    self.radar_map = Some(Snapshot {
-                        data: RadarImage { map, ..radar },
-                        fetched_at: now,
-                    });
+        let state = std::mem::replace(&mut self.radar_state, RadarState::NoBasemap);
+        self.radar_state = self.refresh_radar(self.load_basemap(state), now);
+    }
+
+    fn load_basemap(&self, state: RadarState) -> RadarState {
+        match state {
+            RadarState::NoBasemap => match self.radar.basemap(&self.viewport) {
+                Ok(basemap) => RadarState::Ready {
+                    basemap,
+                    latest: None,
+                },
+                Err(e) => {
+                    eprintln!("basemap: {e:#}");
+                    RadarState::NoBasemap
                 }
-                Err(e) => eprintln!("radar: {e:#}"),
+            },
+            ready @ RadarState::Ready { .. } => ready,
+        }
+    }
+
+    fn refresh_radar(&self, state: RadarState, now: DateTime<Utc>) -> RadarState {
+        match state {
+            RadarState::Ready { basemap, latest } if is_due(&latest, now, RADAR_EVERY) => {
+                let latest = match self.radar.latest(&self.viewport, &basemap) {
+                    Ok(data) => Some(Snapshot {
+                        data,
+                        fetched_at: now,
+                    }),
+                    Err(e) => {
+                        eprintln!("radar: {e:#}");
+                        latest
+                    }
+                };
+                RadarState::Ready { basemap, latest }
             }
+            other => other,
         }
     }
 }

@@ -53,7 +53,8 @@ impl Salah {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DayTimes {
     pub date: NaiveDate,
-    pub times: [(Salah, DateTime<Utc>); 6],
+    /// Indexed by `Salah as usize`; the array has one slot per variant.
+    times: [DateTime<Utc>; 6],
     /// Fajr of the following day, the next prayer once Isha has passed.
     pub fajr_tomorrow: DateTime<Utc>,
 }
@@ -81,13 +82,21 @@ impl DayTimes {
             .map_err(anyhow::Error::msg)?;
         Ok(Self {
             date,
-            times: Salah::DAY.map(|s| (s, schedule.time(s.library()))),
+            times: Salah::DAY.map(|s| schedule.time(s.library())),
             fajr_tomorrow: schedule.time(Prayer::FajrTomorrow),
         })
     }
 
+    pub fn at(&self, salah: Salah) -> DateTime<Utc> {
+        self.times[salah as usize]
+    }
+
+    pub fn times(&self) -> [(Salah, DateTime<Utc>); 6] {
+        Salah::DAY.map(|s| (s, self.at(s)))
+    }
+
     pub fn upcoming(&self, now: DateTime<Utc>) -> Upcoming {
-        self.times
+        self.times()
             .iter()
             .find(|(_, at)| *at > now)
             .map(|&(prayer, at)| Upcoming { prayer, at })
@@ -100,7 +109,7 @@ impl DayTimes {
     /// The day's times as shown at `now`: once Isha has passed, Fajr becomes tomorrow's.
     pub fn board(&self, now: DateTime<Utc>) -> [(Salah, DateTime<Utc>); 6] {
         let after_isha = self.upcoming(now).at == self.fajr_tomorrow;
-        self.times.map(|(salah, at)| match salah {
+        self.times().map(|(salah, at)| match salah {
             Salah::Fajr if after_isha => (salah, self.fajr_tomorrow),
             _ => (salah, at),
         })
@@ -108,8 +117,7 @@ impl DayTimes {
 
     /// The Islamic day begins at Maghrib, so the Hijri date advances then.
     pub fn islamic_date(&self, now: DateTime<Utc>) -> NaiveDate {
-        let maghrib = self.times[4].1;
-        if now >= maghrib {
+        if now >= self.at(Salah::Maghrib) {
             self.date.succ_opt().unwrap_or(self.date)
         } else {
             self.date
@@ -180,9 +188,9 @@ mod tests {
         let (location, config) = amsterdam();
         let date = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
         let day = DayTimes::compute(&location, &config, date).unwrap();
-        assert!(day.times.windows(2).all(|w| w[0].1 < w[1].1));
-        assert!(day.times[5].1 < day.fajr_tomorrow);
-        let dhuhr = day.times[2].1.with_timezone(&location.timezone);
+        assert!(day.times().windows(2).all(|w| w[0].1 < w[1].1));
+        assert!(day.at(Salah::Isha) < day.fajr_tomorrow);
+        let dhuhr = day.at(Salah::Dhuhr).with_timezone(&location.timezone);
         assert_eq!(
             dhuhr.format("%H").to_string(),
             "12",
@@ -195,9 +203,9 @@ mod tests {
         let (location, config) = amsterdam();
         let date = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
         let day = DayTimes::compute(&location, &config, date).unwrap();
-        let before_asr = day.times[3].1 - chrono::Duration::minutes(1);
+        let before_asr = day.at(Salah::Asr) - chrono::Duration::minutes(1);
         assert_eq!(day.upcoming(before_asr).prayer, Salah::Asr);
-        let at_asr = day.times[3].1;
+        let at_asr = day.at(Salah::Asr);
         assert_eq!(day.upcoming(at_asr).prayer, Salah::Maghrib);
         let late = Utc.with_ymd_and_hms(2026, 11, 11, 23, 0, 0).unwrap();
         assert_eq!(
@@ -214,10 +222,10 @@ mod tests {
         let (location, config) = amsterdam();
         let date = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
         let day = DayTimes::compute(&location, &config, date).unwrap();
-        let afternoon = day.times[3].1;
-        assert_eq!(day.board(afternoon), day.times);
+        let afternoon = day.at(Salah::Asr);
+        assert_eq!(day.board(afternoon), day.times());
         assert_eq!(day.islamic_date(afternoon), date);
-        let night = day.times[5].1 + chrono::Duration::minutes(5);
+        let night = day.at(Salah::Isha) + chrono::Duration::minutes(5);
         assert_eq!(day.board(night)[0], (Salah::Fajr, day.fajr_tomorrow));
         assert_eq!(day.islamic_date(night), date.succ_opt().unwrap());
     }
@@ -236,7 +244,7 @@ mod tests {
         };
         let later = DayTimes::compute(&location, &shifted, date).unwrap();
         assert_eq!(
-            later.times[5].1 - base.times[5].1,
+            later.at(Salah::Isha) - base.at(Salah::Isha),
             chrono::Duration::minutes(10)
         );
     }

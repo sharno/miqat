@@ -5,10 +5,10 @@ use chrono::{Datelike, Duration, NaiveDate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HijriDate {
-    pub year: i32,
-    /// 1..=12
-    pub month: u8,
-    pub day: u8,
+    year: i32,
+    /// Index into `MONTHS`; only `from_gregorian` constructs it, always in 0..12.
+    month: usize,
+    day: u8,
 }
 
 const MONTHS: [(&str, &str); 12] = [
@@ -42,25 +42,21 @@ impl HijriDate {
         let year = 30 * n + j - 30;
         Self {
             year: year as i32,
-            month: month as u8,
+            // The algorithm yields months 1..=12.
+            month: (month - 1).rem_euclid(12) as usize,
             day: day as u8,
         }
     }
 
     pub fn english(self) -> String {
-        format!(
-            "{} {} {} AH",
-            self.day,
-            MONTHS[usize::from(self.month - 1)].0,
-            self.year
-        )
+        format!("{} {} {} AH", self.day, MONTHS[self.month].0, self.year)
     }
 
     pub fn arabic(self) -> String {
         format!(
             "{} {} {} هـ",
             arabic_digits(self.day.into()),
-            MONTHS[usize::from(self.month - 1)].1,
+            MONTHS[self.month].1,
             arabic_digits(self.year)
         )
     }
@@ -88,11 +84,11 @@ mod tests {
     fn known_dates() {
         // 1 Ramadan 1445 was 2024-03-11 in Umm al-Qura; the tabular calendar agrees within a day.
         let r = hijri(2024, 3, 11);
-        assert_eq!((r.year, r.month), (1445, 9));
+        assert_eq!((r.year, r.month), (1445, 8));
         assert!(r.day <= 2, "{r:?}");
         // 1 Muharram 1448 is around 2026-06-16.
         let m = hijri(2026, 6, 17);
-        assert_eq!((m.year, m.month), (1448, 1));
+        assert_eq!((m.year, m.month), (1448, 0));
     }
 
     #[test]
@@ -105,11 +101,7 @@ mod tests {
 
     #[test]
     fn renders_names() {
-        let h = HijriDate {
-            year: 1448,
-            month: 6,
-            day: 1,
-        };
+        let h = hijri(2026, 11, 12);
         assert_eq!(h.english(), "1 Jumada al-Akhirah 1448 AH");
         assert_eq!(h.arabic(), "١ جمادى الآخرة ١٤٤٨ هـ");
     }

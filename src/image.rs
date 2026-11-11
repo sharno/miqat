@@ -19,35 +19,24 @@ impl Gray {
         }
     }
 
-    /// Per-pixel `f(self, other)`; both images must share dimensions.
-    pub fn zip_with(&self, other: &Gray, f: impl Fn(u8, u8) -> u8) -> Gray {
-        assert_eq!((self.width, self.height), (other.width, other.height));
-        Gray {
-            width: self.width,
-            height: self.height,
-            pixels: self
-                .pixels
-                .iter()
-                .zip(&other.pixels)
-                .map(|(&a, &b)| f(a, b))
-                .collect(),
-        }
-    }
-
-    /// Copies `tile` (already mapped to gray) with its top-left at (left, top), clipped.
-    pub fn blit(&mut self, tile: &Gray, left: i64, top: i64) {
+    /// Merges `tile` into the canvas with its top-left at (left, top), clipped to the
+    /// canvas; `combine(canvas, tile)` picks each resulting pixel.
+    pub fn blit(&mut self, tile: &Gray, left: i64, top: i64, combine: impl Fn(u8, u8) -> u8) {
         let (w, h) = (i64::from(self.width), i64::from(self.height));
         let x0 = left.max(0);
         let x1 = (left + i64::from(tile.width)).min(w);
         if x0 >= x1 {
             return;
         }
-        for y in top.max(0)..(top + i64::from(tile.height)).min(h) {
+        (top.max(0)..(top + i64::from(tile.height)).min(h)).for_each(|y| {
             let src_row = ((y - top) * i64::from(tile.width)) as usize;
             let dst_row = (y * w) as usize;
             let src = &tile.pixels[src_row + (x0 - left) as usize..src_row + (x1 - left) as usize];
-            self.pixels[dst_row + x0 as usize..dst_row + x1 as usize].copy_from_slice(src);
-        }
+            self.pixels[dst_row + x0 as usize..dst_row + x1 as usize]
+                .iter_mut()
+                .zip(src)
+                .for_each(|(dst, &new)| *dst = combine(*dst, new));
+        });
     }
 
     pub fn encode_png(&self) -> anyhow::Result<Vec<u8>> {
@@ -111,6 +100,11 @@ impl Rgba {
     }
 }
 
+/// `blit` combiner that overwrites the canvas.
+pub fn replace(_canvas: u8, tile: u8) -> u8 {
+    tile
+}
+
 /// Rec. 601 luma, composited over white.
 pub fn luma_over_white([r, g, b, a]: [u8; 4]) -> u8 {
     let luma = (299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) / 1000;
@@ -126,13 +120,13 @@ mod tests {
     fn blit_clips_at_edges() {
         let mut canvas = Gray::filled(4, 3, 255);
         let tile = Gray::filled(3, 3, 0);
-        canvas.blit(&tile, -1, 1);
+        canvas.blit(&tile, -1, 1, replace);
         assert_eq!(
             canvas.pixels,
             vec![255, 255, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255]
         );
-        canvas.blit(&tile, 10, 0);
-        canvas.blit(&tile, -10, 0);
+        canvas.blit(&tile, 10, 0, replace);
+        canvas.blit(&tile, -10, 0, replace);
     }
 
     #[test]

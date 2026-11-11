@@ -10,7 +10,11 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use crate::config::{Location, Zoom};
-use crate::image::{Gray, Rgba, luma_over_white};
+use crate::image::{Gray, Rgba, luma_over_white, replace};
+
+/// The static map for one viewport; radar can only be drawn over one of these.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Basemap(Gray);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RadarImage {
@@ -102,7 +106,8 @@ fn rain_gray(pixel: [u8; 4]) -> u8 {
     palette::UNIVERSAL_BLUE
         .binary_search_by_key(&rgba, |&(color, _)| color)
         .ok()
-        .map(|i| palette::UNIVERSAL_BLUE[i].1)
+        .and_then(|i| palette::UNIVERSAL_BLUE.get(i))
+        .map(|&(_, dbz)| dbz)
         .and_then(|dbz| INTENSITY_GRAYS.iter().find(|(below, _)| dbz < *below))
         .map_or(255, |&(_, gray)| gray)
 }
@@ -133,15 +138,18 @@ impl RadarClient {
         Self { agent }
     }
 
-    pub fn basemap(&self, viewport: &Viewport) -> anyhow::Result<Gray> {
+    pub fn basemap(&self, viewport: &Viewport) -> anyhow::Result<Basemap> {
         let zoom = viewport.zoom.level() + 1;
+        let blank = Gray::filled(viewport.width, viewport.height, 255);
         // Fetched once per process (a handful of tiles), within OSM's tile usage policy.
-        self.composite(viewport, BASEMAP_TILE, faded, |p| {
+        self.composite(viewport, BASEMAP_TILE, blank, faded, replace, |p| {
             format!("https://tile.openstreetmap.org/{zoom}/{}/{}.png", p.x, p.y)
         })
+        .map(Basemap)
     }
 
-    pub fn latest(&self, viewport: &Viewport) -> anyhow::Result<RadarImage> {
+    /// The newest radar frame drawn over `basemap`, which must come from the same viewport.
+    pub fn latest(&self, viewport: &Viewport, basemap: &Basemap) -> anyhow::Result<RadarImage> {
         let maps: WeatherMaps = self
             .agent
             .get("https://api.rainviewer.com/public/weather-maps.json")
@@ -158,12 +166,20 @@ impl RadarClient {
             DateTime::from_timestamp(frame.time, 0).context("radar frame time out of range")?;
         let zoom = viewport.zoom.level();
         // Options `0_0`: unsmoothed, so pixels match the palette exactly; no separate snow colors.
-        let map = self.composite(viewport, RADAR_TILE, rain_gray, |p| {
-            format!(
-                "{}{}/{RADAR_TILE}/{zoom}/{}/{}/2/0_0.png",
-                maps.host, frame.path, p.x, p.y
-            )
-        })?;
+        // The darker value wins so map labels stay visible under rain.
+        let map = self.composite(
+            viewport,
+            RADAR_TILE,
+            basemap.0.clone(),
+            rain_gray,
+            u8::min,
+            |p| {
+                format!(
+                    "{}{}/{RADAR_TILE}/{zoom}/{}/{}/2/0_0.png",
+                    maps.host, frame.path, p.x, p.y
+                )
+            },
+        )?;
         Ok(RadarImage { observed_at, map })
     }
 
@@ -171,12 +187,15 @@ impl RadarClient {
         &self,
         viewport: &Viewport,
         tile_px: u32,
+        canvas: Gray,
         to_gray: impl Fn([u8; 4]) -> u8,
+        combine: impl Fn(u8, u8) -> u8 + Copy,
         url: impl Fn(&Placement) -> String,
     ) -> anyhow::Result<Gray> {
-        viewport.placements(tile_px).iter().try_fold(
-            Gray::filled(viewport.width, viewport.height, 255),
-            |mut canvas, placement| {
+        viewport
+            .placements(tile_px)
+            .iter()
+            .try_fold(canvas, |mut canvas, placement| {
                 let url = url(placement);
                 let bytes = self
                     .agent
@@ -185,16 +204,15 @@ impl RadarClient {
                     .and_then(|mut r| r.body_mut().read_to_vec())
                     .with_context(|| format!("fetching {url}"))?;
                 let tile = Rgba::decode_png(&bytes).with_context(|| format!("decoding {url}"))?;
-                canvas.blit(&tile.map_to_gray(&to_gray), placement.left, placement.top);
+                canvas.blit(
+                    &tile.map_to_gray(&to_gray),
+                    placement.left,
+                    placement.top,
+                    combine,
+                );
                 Ok(canvas)
-            },
-        )
+            })
     }
-}
-
-/// Radar drawn over the basemap; the darker value wins so labels stay visible in rain.
-pub fn overlay(basemap: &Gray, radar: &Gray) -> Gray {
-    basemap.zip_with(radar, u8::min)
 }
 
 #[cfg(test)]

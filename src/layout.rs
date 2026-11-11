@@ -3,15 +3,15 @@
 
 use std::fmt::{self, Display, Write as _};
 
-use chrono::{DateTime, Datelike, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use chrono_tz::Tz;
 
 use crate::config::{ClockFormat, Config};
 use crate::hijri::HijriDate;
-use crate::prayer::{DayTimes, Salah};
+use crate::prayer::{DayTimes, Salah, Upcoming};
 use crate::radar::RadarImage;
 use crate::sources::Snapshot;
-use crate::weather::{Condition, Hour, Quarter, Sky, Weather};
+use crate::weather::{Condition, Hour, Light, Quarter, Sky, Weather};
 
 pub const WIDTH: u32 = 758;
 pub const HEIGHT: u32 = 1024;
@@ -84,9 +84,9 @@ fn prayers(frame: &Frame) -> String {
             let baseline = top + 35.0;
             let (english, arabic) = salah.names(weekday);
             let time = format_time(at, tz, frame.config.display.clock);
-            let is_next = upcoming.prayer == salah && upcoming.at == at;
-            let (fill, background) = match (is_next, at <= frame.now) {
-                (true, _) => (
+            let state = RowState::of(salah, at, upcoming, frame.now);
+            let (fill, background) = match state {
+                RowState::Next => (
                     "#fff",
                     rect(
                         MARGIN - 12.0,
@@ -96,8 +96,8 @@ fn prayers(frame: &Frame) -> String {
                         8.0,
                     ),
                 ),
-                (false, true) => (MUTED, String::new()),
-                (false, false) => ("#000", String::new()),
+                RowState::Passed => (MUTED, String::new()),
+                RowState::Later => ("#000", String::new()),
             };
             let weight = if salah == Salah::Sunrise { 400 } else { 600 };
             [
@@ -111,12 +111,11 @@ fn prayers(frame: &Frame) -> String {
                     .end()
                     .fill(fill)
                     .to_string(),
-                if is_next {
-                    text(360.0, baseline, 26, &countdown(frame.now, at))
+                match state {
+                    RowState::Next => text(360.0, baseline, 26, &countdown(frame.now, at))
                         .fill(fill)
-                        .to_string()
-                } else {
-                    String::new()
+                        .to_string(),
+                    RowState::Passed | RowState::Later => String::new(),
                 },
                 text(RIGHT, baseline, 30, arabic)
                     .weight(weight)
@@ -127,6 +126,23 @@ fn prayers(frame: &Frame) -> String {
             .concat()
         });
     rows.chain([hline(TOP + ROW * 6.0 + 14.0, 2.0)]).collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowState {
+    Next,
+    Passed,
+    Later,
+}
+
+impl RowState {
+    fn of(salah: Salah, at: DateTime<Utc>, upcoming: Upcoming, now: DateTime<Utc>) -> Self {
+        match (Upcoming { prayer: salah, at } == upcoming, at <= now) {
+            (true, _) => RowState::Next,
+            (false, true) => RowState::Passed,
+            (false, false) => RowState::Later,
+        }
+    }
 }
 
 fn weather(frame: &Frame) -> String {
@@ -272,11 +288,7 @@ fn clock_parts(t: DateTime<Utc>, tz: Tz, clock: ClockFormat) -> (String, Option<
     match clock {
         ClockFormat::TwelveHour => (
             local.format("%-I:%M").to_string(),
-            Some(if local.format("%P").to_string() == "am" {
-                "AM"
-            } else {
-                "PM"
-            }),
+            Some(if local.hour() < 12 { "AM" } else { "PM" }),
         ),
         ClockFormat::TwentyFourHour => (local.format("%H:%M").to_string(), None),
     }
@@ -360,9 +372,23 @@ struct Text<'a> {
     size: u32,
     content: &'a str,
     weight: u16,
-    anchor: &'static str,
+    anchor: Anchor,
     fill: &'static str,
-    halo: bool,
+    outline: Outline,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Anchor {
+    Start,
+    Middle,
+    End,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Outline {
+    None,
+    /// A white outline so text stays legible over the map.
+    Halo,
 }
 
 fn text(x: f64, y: f64, size: u32, content: &str) -> Text<'_> {
@@ -372,9 +398,9 @@ fn text(x: f64, y: f64, size: u32, content: &str) -> Text<'_> {
         size,
         content,
         weight: 400,
-        anchor: "start",
+        anchor: Anchor::Start,
         fill: "#000",
-        halo: false,
+        outline: Outline::None,
     }
 }
 
@@ -384,36 +410,44 @@ impl Text<'_> {
     }
     fn end(self) -> Self {
         Self {
-            anchor: "end",
+            anchor: Anchor::End,
             ..self
         }
     }
     fn middle(self) -> Self {
         Self {
-            anchor: "middle",
+            anchor: Anchor::Middle,
             ..self
         }
     }
     fn fill(self, fill: &'static str) -> Self {
         Self { fill, ..self }
     }
-    /// A white outline so text stays legible over the map.
     fn halo(self) -> Self {
-        Self { halo: true, ..self }
+        Self {
+            outline: Outline::Halo,
+            ..self
+        }
     }
 }
 
 impl Display for Text<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let halo = if self.halo {
-            r##" stroke="#fff" stroke-width="5" stroke-linejoin="round" paint-order="stroke""##
-        } else {
-            ""
+        let anchor = match self.anchor {
+            Anchor::Start => "start",
+            Anchor::Middle => "middle",
+            Anchor::End => "end",
+        };
+        let outline = match self.outline {
+            Outline::None => "",
+            Outline::Halo => {
+                r##" stroke="#fff" stroke-width="5" stroke-linejoin="round" paint-order="stroke""##
+            }
         };
         write!(
             f,
-            r#"<text x="{}" y="{}" font-size="{}" font-weight="{}" text-anchor="{}" fill="{}"{halo}>"#,
-            self.x, self.y, self.size, self.weight, self.anchor, self.fill
+            r#"<text x="{}" y="{}" font-size="{}" font-weight="{}" text-anchor="{anchor}" fill="{}"{outline}>"#,
+            self.x, self.y, self.size, self.weight, self.fill
         )?;
         self.content.chars().try_for_each(|c| match c {
             '&' => f.write_str("&amp;"),
@@ -459,9 +493,12 @@ fn icon(sky: Sky, x: f64, y: f64, size: f64) -> String {
     const SNOW: &str = r##"<g stroke="#000" stroke-width="4" stroke-linecap="round"><path d="M34 72v16M27 76l14 8M27 84l14-8M66 72v16M59 76l14 8M59 84l14-8"/></g>"##;
     const BOLT: &str = r##"<path d="M54 64l-12 18h10l-6 16 18-22h-10l6-12z" stroke="#000" stroke-width="2" stroke-linejoin="round"/>"##;
     const FOG: &str = r##"<g stroke="#000" stroke-width="6" stroke-linecap="round"><path d="M18 40h64M12 56h76M22 72h58"/></g>"##;
-    let small_light = if sky.is_day { SMALL_SUN } else { SMALL_MOON };
+    let (light, small_light) = match sky.light {
+        Light::Day => (SUN, SMALL_SUN),
+        Light::Night => (MOON, SMALL_MOON),
+    };
     let layers: &[&str] = match sky.condition {
-        Condition::Clear | Condition::MainlyClear => &[if sky.is_day { SUN } else { MOON }],
+        Condition::Clear | Condition::MainlyClear => &[light],
         Condition::PartlyCloudy => &[small_light, CLOUD],
         Condition::Overcast => &[CLOUD],
         Condition::Fog => &[FOG],

@@ -56,8 +56,10 @@ impl Renderer {
 
 fn draw_gray(pixmap: &mut tiny_skia::Pixmap, image: &Gray, top: u32) {
     let offset = (top * pixmap.width()) as usize;
-    pixmap.pixels_mut()[offset..offset + image.pixels.len()]
+    pixmap
+        .pixels_mut()
         .iter_mut()
+        .skip(offset)
         .zip(&image.pixels)
         .for_each(|(dst, &g)| {
             *dst = tiny_skia::PremultipliedColorU8::from_rgba(g, g, g, 255).unwrap_or(*dst)

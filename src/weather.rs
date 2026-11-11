@@ -35,7 +35,24 @@ pub struct Wind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sky {
     pub condition: Condition,
-    pub is_day: bool,
+    pub light: Light,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Light {
+    Day,
+    Night,
+}
+
+impl Light {
+    /// Open-Meteo's `is_day` flag.
+    fn from_is_day(flag: u8) -> anyhow::Result<Self> {
+        match flag {
+            1 => Ok(Light::Day),
+            0 => Ok(Light::Night),
+            other => bail!("is_day must be 0 or 1, got {other}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -148,7 +165,7 @@ pub fn decode(body: &str, timezone: Tz) -> anyhow::Result<Weather> {
         humidity_percent: c.relative_humidity_2m,
         sky: Sky {
             condition: Condition::from_wmo(c.weather_code)?,
-            is_day: c.is_day == 1,
+            light: Light::from_is_day(c.is_day)?,
         },
         wind: Wind {
             speed: c.wind_speed_10m,
@@ -182,7 +199,7 @@ pub fn decode(body: &str, timezone: Tz) -> anyhow::Result<Weather> {
                     precipitation_chance: chance,
                     sky: Sky {
                         condition: Condition::from_wmo(code)?,
-                        is_day: is_day == 1,
+                        light: Light::from_is_day(is_day)?,
                     },
                     wind_speed,
                 })
