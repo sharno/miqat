@@ -1,0 +1,34 @@
+# Copy to config.toml (git-ignored) and set your location.
+
+[location]
+latitude = 52.3676
+longitude = 4.9041
+timezone = "Europe/Amsterdam"   # IANA name
+
+[prayer]
+# muslim_world_league | egyptian | karachi | umm_al_qura | dubai | moonsighting_committee
+# north_america | kuwait | qatar | singapore | tehran | turkey
+method = "muslim_world_league"
+madhab = "shafi"                # shafi | hanafi (later Asr)
+hijri_offset_days = 0           # shift the tabular Hijri date to match local sighting
+
+# Optional per-prayer offsets in minutes, e.g. to match your mosque's timetable.
+[prayer.adjust_minutes]
+fajr = 0
+dhuhr = 0
+asr = 0
+maghrib = 0
+isha = 0
+
+[weather]
+temperature_unit = "celsius"    # celsius | fahrenheit
+wind_unit = "kmh"               # kmh | ms | mph | kn
+
+[radar]
+zoom = 7                        # 3..=7; 7 shows ~280 km across, 6 doubles it
+
+[display]
+clock = "24h"                   # 12h | 24h
+
+[server]
+listen = "0.0.0.0:8080"
