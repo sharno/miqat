@@ -22,6 +22,17 @@ pub const RADAR_SIZE: (u32, u32) = (WIDTH, HEIGHT - RADAR_TOP);
 const MARGIN: f64 = 28.0;
 const RIGHT: f64 = WIDTH as f64 - MARGIN;
 const MUTED: &str = "#666";
+
+/// The timetable runs from here to the divider above the weather.
+const PRAYERS_TOP: f64 = 164.0;
+const PRAYERS_BOTTOM: f64 = 466.0;
+/// Height of a passed or later row.
+const PRAYER_ROW: f64 = 40.0;
+/// The upcoming time is the one thing to read from across the room, so it gets a
+/// tall card; the other rows tighten up to pay for it.
+const NEXT_PRAYER_ROW: f64 = 98.0;
+/// The six rows must still clear the divider the weather section starts at.
+const _: () = assert!(PRAYERS_TOP + 5.0 * PRAYER_ROW + NEXT_PRAYER_ROW <= PRAYERS_BOTTOM);
 /// Data older than this gets an "as of" note.
 const STALE_AFTER: Duration = Duration::minutes(45);
 
@@ -69,63 +80,94 @@ fn header(frame: &Frame) -> String {
 }
 
 fn prayers(frame: &Frame) -> String {
-    const TOP: f64 = 164.0;
-    const ROW: f64 = 48.0;
     let tz = frame.config.location.timezone;
     let weekday = frame.prayers.date.weekday();
     let upcoming = frame.prayers.upcoming(frame.now);
-    let rows = frame
-        .prayers
-        .board(frame.now)
-        .into_iter()
-        .enumerate()
-        .map(|(i, (salah, at))| {
-            let top = TOP + ROW * i as f64;
-            let baseline = top + 35.0;
-            let (english, arabic) = salah.names(weekday);
-            let time = format_time(at, tz, frame.config.display.clock);
-            let state = RowState::of(salah, at, upcoming, frame.now);
-            let (fill, background) = match state {
-                RowState::Next => (
-                    "#fff",
-                    rect(
-                        MARGIN - 12.0,
-                        top + 2.0,
-                        RIGHT - MARGIN + 24.0,
-                        ROW - 4.0,
-                        8.0,
-                    ),
-                ),
-                RowState::Passed => (MUTED, String::new()),
-                RowState::Later => ("#000", String::new()),
-            };
-            let weight = if salah == Salah::Sunrise { 400 } else { 600 };
-            [
-                background,
-                text(MARGIN, baseline, 32, english)
-                    .weight(weight)
-                    .fill(fill)
-                    .to_string(),
-                text(330.0, baseline, 34, &time)
-                    .weight(700)
-                    .end()
-                    .fill(fill)
-                    .to_string(),
-                match state {
-                    RowState::Next => text(360.0, baseline, 26, &countdown(frame.now, at))
-                        .fill(fill)
-                        .to_string(),
-                    RowState::Passed | RowState::Later => String::new(),
-                },
-                text(RIGHT, baseline, 30, arabic)
-                    .weight(weight)
-                    .end()
-                    .fill(fill)
-                    .to_string(),
-            ]
-            .concat()
-        });
-    rows.chain([hline(TOP + ROW * 6.0 + 14.0, 2.0)]).collect()
+    let mut top = PRAYERS_TOP;
+    let mut rows = String::new();
+    for (salah, at) in frame.prayers.board(frame.now) {
+        let state = RowState::of(salah, at, upcoming, frame.now);
+        let (english, arabic) = salah.names(weekday);
+        let time = format_time(at, tz, frame.config.display.clock);
+        let weight = if salah == Salah::Sunrise { 400 } else { 600 };
+        let row = match state {
+            RowState::Next => next_row(top, frame.now, at, (english, arabic, &time), weight),
+            RowState::Passed => plain_row(top, (english, arabic, &time), weight, MUTED),
+            RowState::Later => plain_row(top, (english, arabic, &time), weight, "#000"),
+        };
+        rows.push_str(&row);
+        top += state.height();
+    }
+    rows.push_str(&hline(PRAYERS_BOTTOM, 2.0));
+    rows
+}
+
+/// The upcoming time, as a tall card with much larger type than the rest of the
+/// timetable. Its time column sits further right than the plain rows because the
+/// larger prayer names would otherwise collide with the time.
+fn next_row(
+    top: f64,
+    now: DateTime<Utc>,
+    at: DateTime<Utc>,
+    (english, arabic, time): (&str, &str, &str),
+    weight: u16,
+) -> String {
+    const SIZE: f64 = 52.0;
+    let baseline = baseline(top, NEXT_PRAYER_ROW, SIZE);
+    [
+        rect(
+            MARGIN - 12.0,
+            top + 4.0,
+            RIGHT - MARGIN + 24.0,
+            NEXT_PRAYER_ROW - 8.0,
+            12.0,
+        ),
+        text(MARGIN, baseline, SIZE as u32, english)
+            .weight(weight)
+            .fill("#fff")
+            .to_string(),
+        text(470.0, baseline, SIZE as u32, time)
+            .weight(700)
+            .end()
+            .fill("#fff")
+            .to_string(),
+        text(484.0, baseline, 24, &countdown(now, at))
+            .weight(600)
+            .fill("#fff")
+            .to_string(),
+        text(RIGHT, baseline, 36, arabic)
+            .weight(weight)
+            .end()
+            .fill("#fff")
+            .to_string(),
+    ]
+    .concat()
+}
+
+fn plain_row(
+    top: f64,
+    (english, arabic, time): (&str, &str, &str),
+    weight: u16,
+    fill: &'static str,
+) -> String {
+    let baseline = baseline(top, PRAYER_ROW, 32.0);
+    [
+        text(MARGIN, baseline, 30, english)
+            .weight(weight)
+            .fill(fill)
+            .to_string(),
+        text(330.0, baseline, 32, time)
+            .weight(700)
+            .end()
+            .fill(fill)
+            .to_string(),
+        text(RIGHT, baseline, 28, arabic)
+            .weight(weight)
+            .end()
+            .fill(fill)
+            .to_string(),
+    ]
+    .concat()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,10 +185,17 @@ impl RowState {
             (false, false) => RowState::Later,
         }
     }
+
+    fn height(self) -> f64 {
+        match self {
+            RowState::Next => NEXT_PRAYER_ROW,
+            RowState::Passed | RowState::Later => PRAYER_ROW,
+        }
+    }
 }
 
 fn weather(frame: &Frame) -> String {
-    const TOP: f64 = 466.0;
+    const TOP: f64 = PRAYERS_BOTTOM;
     let Some(snapshot) = frame.weather else {
         return text(WIDTH as f64 / 2.0, TOP + 130.0, 28, "Weather unavailable")
             .middle()
@@ -365,6 +414,11 @@ fn compass(from_degrees: f64) -> &'static str {
 }
 
 // ---- drawing primitives ----
+
+/// Baseline that vertically centres a line of `size` type in a box `height` tall.
+fn baseline(top: f64, height: f64, size: f64) -> f64 {
+    top + (height + size * 0.72) / 2.0
+}
 
 struct Text<'a> {
     x: f64,

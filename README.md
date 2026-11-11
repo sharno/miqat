@@ -6,7 +6,7 @@ A wall-mounted prayer-times and weather dashboard for an old Kindle Paperwhite.
 
 It shows:
 - the clock, Gregorian and Hijri dates
-- the six daily times with a countdown to the next one
+- the six daily times, the upcoming one enlarged with a countdown to it
 - current weather, wind speed, gusts and direction, today's high and low
 - the next six hours
 - a 2-hour rain outlook
