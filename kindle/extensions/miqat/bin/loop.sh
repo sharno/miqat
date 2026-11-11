@@ -15,8 +15,10 @@ take_over() {
   lipc-set-prop com.lab126.powerd preventScreenSaver 1
   # Stopping the GUI job signals its whole tree, which can include us (KOReader does the same).
   trap '' TERM
+  log "stopping the Kindle UI"
   stop lab126_gui
   sleep 2
+  log "UI stopped"
   trap restore TERM INT
   [ -n "$FRONTLIGHT" ] && lipc-set-prop com.lab126.powerd flIntensity "$FRONTLIGHT"
   eips -c
@@ -46,6 +48,7 @@ while :; do
   if curl -fsS -m 30 -o "$PART" "$SERVER_URL"; then
     mv "$PART" "$IMG"
     failures=0
+    [ "$frame" -eq 0 ] && log "first frame"
     if [ $((frame % FULL_REFRESH_EVERY)) -eq 0 ]; then
       eips -f -g "$IMG"
     else

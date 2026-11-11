@@ -5,5 +5,8 @@ PIDFILE=/var/tmp/miqat.pid
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   exit 0
 fi
-nohup "$DIR/bin/loop.sh" >>"$DIR/miqat.log" 2>&1 &
+# KUAL runs us inside the UI's process tree, and `stop lab126_gui` kills that whole
+# process group (eventually with KILL, which no trap survives). setsid moves the loop
+# into its own session first.
+setsid "$DIR/bin/loop.sh" >>"$DIR/miqat.log" 2>&1 </dev/null &
 echo $! >"$PIDFILE"
