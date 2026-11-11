@@ -1,7 +1,8 @@
 //! Rain radar from RainViewer over an OpenStreetMap basemap, as one grayscale image.
 //!
 //! Both layers share one Web Mercator pixel space: RainViewer 512 px tiles at zoom `z`
-//! line up with OSM 256 px tiles at `z + 1`.
+//! line up with OSM 256 px tiles at `z + 1`. RainViewer stops at zoom 7, so deeper maps
+//! fetch its zoom-7 tiles for the same area and magnify them.
 
 mod palette;
 
@@ -52,6 +53,26 @@ impl Viewport {
         }
     }
 
+    /// The same area at `zoom` (no deeper than this one), one pixel larger on each axis
+    /// so magnifying it back covers every edge pixel.
+    fn coarser(&self, zoom: Zoom) -> Coarse {
+        let factor = 1u32 << (self.zoom.level() - zoom.level());
+        let scale = f64::from(factor);
+        let viewport = Viewport {
+            left: (self.left / scale).floor(),
+            top: (self.top / scale).floor(),
+            width: self.width.div_ceil(factor) + 1,
+            height: self.height.div_ceil(factor) + 1,
+            zoom,
+        };
+        Coarse {
+            factor,
+            left: (self.left - viewport.left * scale) as i64,
+            top: (self.top - viewport.top * scale) as i64,
+            viewport,
+        }
+    }
+
     /// Tiles of `tile_px` that cover the viewport, and where each lands in it.
     fn placements(&self, tile_px: u32) -> Vec<Placement> {
         let size = f64::from(tile_px);
@@ -75,6 +96,15 @@ impl Viewport {
 
 fn world_size(zoom: Zoom) -> f64 {
     f64::from(RADAR_TILE) * f64::from(1u32 << zoom.level())
+}
+
+/// A lower-zoom viewport and where the original sits inside it once magnified.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Coarse {
+    viewport: Viewport,
+    factor: u32,
+    left: i64,
+    top: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,22 +194,34 @@ impl RadarClient {
             .context("RainViewer returned no radar frames")?;
         let observed_at =
             DateTime::from_timestamp(frame.time, 0).context("radar frame time out of range")?;
-        let zoom = viewport.zoom.level();
+        let coarse = viewport.coarser(viewport.zoom.radar());
+        let zoom = coarse.viewport.zoom.level();
+        let blank = Gray::filled(coarse.viewport.width, coarse.viewport.height, 255);
         // Options `0_0`: unsmoothed, so pixels match the palette exactly; no separate snow colors.
+        let rain = self
+            .composite(
+                &coarse.viewport,
+                RADAR_TILE,
+                blank,
+                rain_gray,
+                replace,
+                |p| {
+                    format!(
+                        "{}{}/{RADAR_TILE}/{zoom}/{}/{}/2/0_0.png",
+                        maps.host, frame.path, p.x, p.y
+                    )
+                },
+            )?
+            .magnified(
+                coarse.factor,
+                coarse.left,
+                coarse.top,
+                viewport.width,
+                viewport.height,
+            );
         // The darker value wins so map labels stay visible under rain.
-        let map = self.composite(
-            viewport,
-            RADAR_TILE,
-            basemap.0.clone(),
-            rain_gray,
-            u8::min,
-            |p| {
-                format!(
-                    "{}{}/{RADAR_TILE}/{zoom}/{}/{}/2/0_0.png",
-                    maps.host, frame.path, p.x, p.y
-                )
-            },
-        )?;
+        let mut map = basemap.0.clone();
+        map.blit(&rain, 0, 0, u8::min);
         Ok(RadarImage { observed_at, map })
     }
 
@@ -260,6 +302,25 @@ mod tests {
                 .iter()
                 .all(|&(x, y)| covered(x, y) == 1)
         );
+    }
+
+    #[test]
+    fn coarser_viewport_covers_the_same_area() {
+        let zoom = Zoom::try_from(9).unwrap();
+        let v = Viewport::centered(&location(41.0, -71.0), zoom, 758, 276);
+        let c = v.coarser(zoom.radar());
+        assert_eq!(c.factor, 4);
+        assert_eq!(c.viewport.zoom.level(), 7);
+        let s = f64::from(c.factor);
+        assert!((0..4).contains(&c.left) && (0..4).contains(&c.top));
+        assert!(c.viewport.left * s <= v.left && c.viewport.top * s <= v.top);
+        let right = (c.viewport.left + f64::from(c.viewport.width)) * s;
+        let bottom = (c.viewport.top + f64::from(c.viewport.height)) * s;
+        assert!(right >= v.left + f64::from(v.width) && bottom >= v.top + f64::from(v.height));
+        // At the radar's own zoom nothing is magnified.
+        let same = Viewport::centered(&location(41.0, -71.0), Zoom::try_from(7).unwrap(), 758, 276);
+        let c = same.coarser(Zoom::try_from(7).unwrap());
+        assert_eq!((c.factor, c.left, c.top), (1, 0, 0));
     }
 
     #[test]

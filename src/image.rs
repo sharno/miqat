@@ -39,6 +39,35 @@ impl Gray {
         });
     }
 
+    /// A `width`×`height` window of this image magnified `factor` times, starting
+    /// `(left, top)` magnified pixels in, with bilinear smoothing. Edges are clamped.
+    pub fn magnified(&self, factor: u32, left: i64, top: i64, width: u32, height: u32) -> Gray {
+        let scale = f64::from(factor);
+        // Source coordinate of an output pixel's center.
+        let source = |out: u32, offset: i64, len: u32| {
+            let u = ((f64::from(out) + offset as f64 + 0.5) / scale - 0.5)
+                .clamp(0.0, f64::from(len - 1));
+            let i = u.floor() as u32;
+            (i, (i + 1).min(len - 1), u - f64::from(i))
+        };
+        let at = |x: u32, y: u32| f64::from(self.pixels[(y * self.width + x) as usize]);
+        let pixels = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let (x0, x1, fx) = source(x, left, self.width);
+                let (y0, y1, fy) = source(y, top, self.height);
+                let top_row = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+                let bottom_row = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+                (top_row * (1.0 - fy) + bottom_row * fy).round() as u8
+            })
+            .collect();
+        Gray {
+            width,
+            height,
+            pixels,
+        }
+    }
+
     pub fn encode_png(&self) -> anyhow::Result<Vec<u8>> {
         let mut out = Vec::new();
         let mut encoder = png::Encoder::new(&mut out, self.width, self.height);
@@ -127,6 +156,27 @@ mod tests {
         );
         canvas.blit(&tile, 10, 0, replace);
         canvas.blit(&tile, -10, 0, replace);
+    }
+
+    #[test]
+    fn magnify_by_one_is_a_crop() {
+        let image = Gray {
+            width: 3,
+            height: 2,
+            pixels: vec![0, 10, 20, 30, 40, 50],
+        };
+        assert_eq!(image.magnified(1, 1, 0, 2, 2).pixels, vec![10, 20, 40, 50]);
+    }
+
+    #[test]
+    fn magnify_interpolates_between_pixels() {
+        let image = Gray {
+            width: 2,
+            height: 1,
+            pixels: vec![0, 200],
+        };
+        let wide = image.magnified(2, 0, 0, 4, 1);
+        assert_eq!(wide.pixels, vec![0, 50, 150, 200]);
     }
 
     #[test]

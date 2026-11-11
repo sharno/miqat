@@ -102,7 +102,7 @@ See [`config.example.toml`](config.example.toml):
 | `prayer.adjust_minutes` | per-prayer offsets, to match a mosque timetable |
 | `prayer.hijri_offset_days` | shift the tabular Hijri date to match local sighting |
 | `weather.temperature_unit` / `wind_unit` | `celsius`/`fahrenheit`; `kmh`/`ms`/`mph`/`kn` |
-| `radar.zoom` | 3–7. RainViewer's free tiles stop at 7, which shows ~280 km across |
+| `radar.zoom` | 3–9, default 8 (~150 km across). Radar past 7 is RainViewer's zoom-7 data upscaled, since its free tiles stop there |
 | `display.clock` | `12h`, `24h` |
 
 ## Data and credits

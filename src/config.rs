@@ -194,28 +194,36 @@ pub struct RadarConfig {
 
 impl Default for RadarConfig {
     fn default() -> Self {
-        Self { zoom: Zoom(7) }
+        Self { zoom: Zoom(8) }
     }
 }
 
-/// RainViewer's free tiles stop at zoom 7 (since 2026); below 3 the map is a continent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// Map zoom. Below 3 the map is a continent; past 9 the upscaled radar is mush.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(try_from = "u8")]
 pub struct Zoom(u8);
+
+/// RainViewer's free tiles stop at zoom 7 (since 2026); deeper maps upscale its radar.
+const MAX_RADAR_ZOOM: Zoom = Zoom(7);
 
 impl Zoom {
     pub fn level(self) -> u8 {
         self.0
+    }
+
+    /// The zoom radar tiles are fetched at.
+    pub fn radar(self) -> Zoom {
+        self.min(MAX_RADAR_ZOOM)
     }
 }
 
 impl TryFrom<u8> for Zoom {
     type Error = String;
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        (3..=7)
+        (3..=9)
             .contains(&value)
             .then_some(Self(value))
-            .ok_or_else(|| format!("radar zoom {value} is outside 3..=7"))
+            .ok_or_else(|| format!("radar zoom {value} is outside 3..=9"))
     }
 }
 
@@ -256,14 +264,14 @@ mod tests {
     fn example_config_parses() {
         let config: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
         assert_eq!(config.prayer.method, CalculationMethod::MuslimWorldLeague);
-        assert_eq!(config.radar.zoom.level(), 7);
+        assert_eq!(config.radar.zoom.level(), 8);
     }
 
     #[test]
     fn rejects_out_of_range_values() {
         let base = "[location]\nlatitude = 91.0\nlongitude = 0.0\ntimezone = \"UTC\"\n[prayer]\nmethod = \"egyptian\"\n";
         assert!(toml::from_str::<Config>(base).is_err());
-        let zoom = base.replace("91.0", "30.0") + "[radar]\nzoom = 9\n";
+        let zoom = base.replace("91.0", "30.0") + "[radar]\nzoom = 10\n";
         assert!(toml::from_str::<Config>(&zoom).is_err());
         let tz = base.replace("91.0", "30.0").replace("UTC", "Mars/Olympus");
         assert!(toml::from_str::<Config>(&tz).is_err());

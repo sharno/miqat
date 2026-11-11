@@ -25,7 +25,7 @@ temperature_unit = "celsius"    # celsius | fahrenheit
 wind_unit = "kmh"               # kmh | ms | mph | kn
 
 [radar]
-zoom = 7                        # 3..=7; 7 shows ~280 km across, 6 doubles it
+zoom = 8                        # 3..=9; each step halves the width (8 ≈ 150 km across)
 
 [display]
 clock = "24h"                   # 12h | 24h
