@@ -87,8 +87,8 @@ fn header(frame: &Frame) -> String {
                 .to_string()
         }),
         text(MARGIN, 100.0, 22, &date).weight(600).to_string(),
-        text(MARGIN, 128.0, 20, &hijri.arabic())
-            .fill(MUTED)
+        text(MARGIN, 130.0, 22, &hijri.english())
+            .weight(600)
             .to_string(),
         text(RIGHT, 48.0, 32, arabic).weight(600).end().to_string(),
         text(RIGHT, 122.0, 88, english)
