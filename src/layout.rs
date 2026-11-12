@@ -79,6 +79,9 @@ fn header(frame: &Frame) -> String {
         .format("%A, %-d %B")
         .to_string();
     let (clock, suffix) = clock_parts(frame.now, tz, frame.config.display.clock);
+    // The left column has to stay clear of the right-anchored prayer name,
+    // whose widest form ("Jumu'ah") reaches x 373. The Hijri line ends at 332
+    // on the longest month; adding the Arabic form again would run to 516.
     [
         text(MARGIN - 4.0, 66.0, 72, &clock).weight(700).to_string(),
         suffix.map_or_else(String::new, |s| {
