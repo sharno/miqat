@@ -11,19 +11,19 @@ pub struct HijriDate {
     day: u8,
 }
 
-const MONTHS: [(&str, &str); 12] = [
-    ("Muharram", "محرم"),
-    ("Safar", "صفر"),
-    ("Rabi' al-Awwal", "ربيع الأول"),
-    ("Rabi' al-Thani", "ربيع الآخر"),
-    ("Jumada al-Ula", "جمادى الأولى"),
-    ("Jumada al-Akhirah", "جمادى الآخرة"),
-    ("Rajab", "رجب"),
-    ("Sha'ban", "شعبان"),
-    ("Ramadan", "رمضان"),
-    ("Shawwal", "شوال"),
-    ("Dhu al-Qa'dah", "ذو القعدة"),
-    ("Dhu al-Hijjah", "ذو الحجة"),
+const MONTHS: [&str; 12] = [
+    "محرم",
+    "صفر",
+    "ربيع الأول",
+    "ربيع الآخر",
+    "جمادى الأولى",
+    "جمادى الآخرة",
+    "رجب",
+    "شعبان",
+    "رمضان",
+    "شوال",
+    "ذو القعدة",
+    "ذو الحجة",
 ];
 
 impl HijriDate {
@@ -48,15 +48,11 @@ impl HijriDate {
         }
     }
 
-    pub fn english(self) -> String {
-        format!("{} {} {} AH", self.day, MONTHS[self.month].0, self.year)
-    }
-
     pub fn arabic(self) -> String {
         format!(
             "{} {} {} هـ",
             arabic_digits(self.day.into()),
-            MONTHS[self.month].1,
+            MONTHS[self.month],
             arabic_digits(self.year)
         )
     }
@@ -102,7 +98,6 @@ mod tests {
     #[test]
     fn renders_names() {
         let h = hijri(2026, 11, 12);
-        assert_eq!(h.english(), "1 Jumada al-Akhirah 1448 AH");
         assert_eq!(h.arabic(), "١ جمادى الآخرة ١٤٤٨ هـ");
     }
 }

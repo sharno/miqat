@@ -1,7 +1,7 @@
 //! Open-Meteo forecast, decoded into domain types at the boundary.
 
 use anyhow::{Context, bail};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 
 use crate::config::{Location, TemperatureUnit, WeatherConfig};
@@ -13,6 +13,24 @@ pub struct Weather {
     pub hours: Vec<Hour>,
     /// Precipitation per 15 minutes, starting at the current quarter hour.
     pub quarters: Vec<Quarter>,
+}
+
+/// Rain only earns space on the dashboard when a quarter hour is at least this wet.
+pub const WET_MM: f64 = 0.1;
+/// How far ahead the dashboard looks for rain.
+pub const RAIN_QUARTERS: usize = 8;
+
+impl Weather {
+    /// Whether any quarter hour in the next two hours is wet enough to count as rain.
+    /// The outlook line and the radar card share this so they can never disagree.
+    pub fn rain_expected(&self, now: DateTime<Utc>) -> bool {
+        let start = self
+            .quarters
+            .partition_point(|quarter| quarter.at + Duration::minutes(15) <= now);
+        self.quarters[start..(start + RAIN_QUARTERS).min(self.quarters.len())]
+            .iter()
+            .any(|quarter| quarter.precipitation_mm >= WET_MM)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -299,6 +317,30 @@ mod tests {
         assert_eq!(weather.hours.len(), 48);
         assert_eq!(weather.quarters.len(), 12);
         assert!(weather.current.wind.gust >= weather.current.wind.speed);
+    }
+
+    #[test]
+    fn rain_expected_looks_two_hours_ahead() {
+        let body = include_str!("../tests/fixtures/open-meteo.json");
+        let mut weather = decode(body, chrono_tz::Europe::Amsterdam).unwrap();
+        let start = weather.quarters[0].at;
+        let now = start + Duration::minutes(5);
+        let quarter = |i: i64, mm: f64| Quarter {
+            at: start + Duration::minutes(15 * i),
+            precipitation_mm: mm,
+        };
+        weather.quarters = (0..12).map(|i| quarter(i, 0.0)).collect();
+        assert!(!weather.rain_expected(now));
+        // A wet quarter inside the window counts...
+        weather.quarters[7] = quarter(7, WET_MM);
+        assert!(weather.rain_expected(now));
+        // ...but one past the two hours does not.
+        weather.quarters[7] = quarter(7, 0.0);
+        weather.quarters[8] = quarter(8, WET_MM);
+        assert!(!weather.rain_expected(now));
+        // The quarter in progress counts.
+        weather.quarters[0] = quarter(0, 1.0);
+        assert!(weather.rain_expected(now));
     }
 
     #[test]

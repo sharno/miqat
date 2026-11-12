@@ -92,8 +92,16 @@ impl Sources {
                 Err(e) => eprintln!("weather: {e:#}"),
             }
         }
+        let rain = self
+            .weather
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.data.rain_expected(now));
         let state = std::mem::replace(&mut self.radar_state, RadarState::NoBasemap);
-        self.radar_state = self.refresh_radar(self.load_basemap(state), now);
+        self.radar_state = if rain {
+            self.refresh_radar(self.load_basemap(state), now)
+        } else {
+            state
+        };
     }
 
     fn load_basemap(&self, state: RadarState) -> RadarState {

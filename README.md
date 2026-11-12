@@ -5,12 +5,15 @@ A wall-mounted prayer-times and weather dashboard for an old Kindle Paperwhite.
 <img src="docs/preview.png" width="380" alt="Dashboard preview">
 
 It shows:
-- the clock, Gregorian and Hijri dates
-- the six daily times, the upcoming one enlarged with a countdown to it
+- the time left until the next prayer, as the biggest thing on the screen
+- the clock, Gregorian and Hijri dates, and the next prayer's name
+- the six daily times in two columns, the upcoming one highlighted
 - current weather, wind speed, gusts and direction, today's high and low
 - the next six hours
+- tomorrow's weather
 - a 2-hour rain outlook
-- a live rain radar map
+- a live rain radar map, shown only when rain is expected; otherwise the
+  conditions and tomorrow take that space
 
 ## How it works
 

@@ -3,7 +3,7 @@
 
 use std::fmt::{self, Display, Write as _};
 
-use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc, Weekday};
 use chrono_tz::Tz;
 
 use crate::config::{ClockFormat, Config};
@@ -11,28 +11,32 @@ use crate::hijri::HijriDate;
 use crate::prayer::{DayTimes, Salah, Upcoming};
 use crate::radar::RadarImage;
 use crate::sources::Snapshot;
-use crate::weather::{Condition, Hour, Light, Quarter, Sky, Weather};
+use crate::weather::{
+    Condition, DayRange, Hour, Light, Quarter, RAIN_QUARTERS, Sky, WET_MM, Weather,
+};
 
 pub const WIDTH: u32 = 758;
 pub const HEIGHT: u32 = 1024;
-/// Where the radar raster goes; the SVG draws its overlays on top.
-pub const RADAR_TOP: u32 = 748;
-pub const RADAR_SIZE: (u32, u32) = (WIDTH, HEIGHT - RADAR_TOP);
+/// Where the radar raster goes when rain is expected; the SVG draws its card on top.
+pub const RADAR_LEFT: i64 = 452;
+pub const RADAR_TOP: i64 = 638;
+pub const RADAR_SIZE: (u32, u32) = (276, 276);
 
 const MARGIN: f64 = 28.0;
 const RIGHT: f64 = WIDTH as f64 - MARGIN;
 const MUTED: &str = "#666";
 
-/// The timetable runs from here to the divider above the weather.
-const PRAYERS_TOP: f64 = 164.0;
-const PRAYERS_BOTTOM: f64 = 466.0;
-/// Height of a passed or later row.
-const PRAYER_ROW: f64 = 40.0;
-/// The upcoming time is the one thing to read from across the room, so it gets a
-/// tall card; the other rows tighten up to pay for it.
-const NEXT_PRAYER_ROW: f64 = 98.0;
-/// The six rows must still clear the divider the weather section starts at.
-const _: () = assert!(PRAYERS_TOP + 5.0 * PRAYER_ROW + NEXT_PRAYER_ROW <= PRAYERS_BOTTOM);
+/// The timetable starts under the header divider.
+const PRAYERS_TOP: f64 = 302.0;
+/// Two columns of three rows: the six times fit in half the height they used to.
+const PRAYER_ROW: f64 = 46.0;
+const COLUMN_WIDTH: f64 = 336.0;
+const COLUMN_GAP: f64 = 30.0;
+const PRAYERS_BOTTOM: f64 = PRAYERS_TOP + 3.0 * PRAYER_ROW;
+/// Where the hourly strip starts, below the prayer grid's divider.
+const HOURLY_TOP: f64 = 460.0;
+/// The prayer grid and its divider must clear the hourly strip.
+const _: () = assert!(PRAYERS_BOTTOM + 8.0 < HOURLY_TOP);
 /// Data older than this gets an "as of" note.
 const STALE_AFTER: Duration = Duration::minutes(45);
 
@@ -44,130 +48,149 @@ pub struct Frame<'a> {
     pub radar: Option<&'a Snapshot<RadarImage>>,
 }
 
+impl Frame<'_> {
+    /// The radar earns its space (and its fetch) only when rain is coming.
+    pub fn rain_expected(&self) -> bool {
+        self.weather
+            .is_some_and(|snapshot| snapshot.data.rain_expected(self.now))
+    }
+}
+
 pub fn svg(frame: &Frame) -> String {
-    let body = [header(frame), prayers(frame), weather(frame), radar(frame)].concat();
+    let body = [header(frame), prayers(frame), weather(frame)].concat();
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" font-family="IBM Plex Sans Arabic">{body}</svg>"#
     )
 }
 
+/// A small clock, the next prayer's names, then the remaining time as the largest
+/// element on the page.
 fn header(frame: &Frame) -> String {
     let tz = frame.config.location.timezone;
-    let local = frame.now.with_timezone(&tz);
+    let upcoming = frame.prayers.upcoming(frame.now);
+    let (english, arabic) = upcoming.prayer.names(frame.prayers.date.weekday());
     let hijri = HijriDate::from_gregorian(
         frame.prayers.islamic_date(frame.now),
         frame.config.prayer.hijri_offset_days,
     );
+    let date = frame
+        .now
+        .with_timezone(&tz)
+        .format("%A, %-d %B")
+        .to_string();
     let (clock, suffix) = clock_parts(frame.now, tz, frame.config.display.clock);
     [
-        text(MARGIN - 4.0, 112.0, 104, &clock)
-            .weight(700)
-            .to_string(),
+        text(MARGIN - 4.0, 66.0, 72, &clock).weight(700).to_string(),
         suffix.map_or_else(String::new, |s| {
-            text(MARGIN + 6.0 + numeric_width(&clock, 104.0), 112.0, 32, s)
+            text(MARGIN + 4.0 + numeric_width(&clock, 72.0), 66.0, 21, s)
                 .weight(600)
                 .to_string()
         }),
-        text(RIGHT, 56.0, 30, &local.format("%A, %-d %B").to_string())
-            .weight(600)
+        text(MARGIN, 100.0, 22, &date).weight(600).to_string(),
+        text(MARGIN, 128.0, 20, &hijri.arabic())
+            .fill(MUTED)
+            .to_string(),
+        text(RIGHT, 48.0, 32, arabic).weight(600).end().to_string(),
+        text(RIGHT, 122.0, 88, english)
+            .weight(700)
             .end()
             .to_string(),
-        text(RIGHT, 96.0, 24, &hijri.english()).end().to_string(),
-        text(RIGHT, 132.0, 26, &hijri.arabic()).end().to_string(),
-        hline(152.0, 2.0),
+        countdown_hero(
+            f64::from(WIDTH) / 2.0,
+            268.0,
+            &countdown(frame.now, upcoming.at),
+        ),
+        hline(292.0, 2.0),
     ]
     .concat()
+}
+
+/// `in 9h 52m` with a small "in", so the remaining time itself can be enormous.
+fn countdown_hero(x: f64, baseline: f64, remaining: &str) -> String {
+    let (prefix, rest) = remaining.split_once(' ').unwrap_or(("", remaining));
+    format!(
+        r##"<text x="{x}" y="{baseline}" text-anchor="middle" font-size="36" font-weight="600" fill="{MUTED}"><tspan dy="-20">{prefix} </tspan><tspan dy="20" font-size="150" font-weight="700" fill="#000">{rest}</tspan></text>"##
+    )
 }
 
 fn prayers(frame: &Frame) -> String {
-    let tz = frame.config.location.timezone;
     let weekday = frame.prayers.date.weekday();
     let upcoming = frame.prayers.upcoming(frame.now);
-    let mut top = PRAYERS_TOP;
-    let mut rows = String::new();
-    for (salah, at) in frame.prayers.board(frame.now) {
-        let state = RowState::of(salah, at, upcoming, frame.now);
-        let (english, arabic) = salah.names(weekday);
-        let time = format_time(at, tz, frame.config.display.clock);
-        let weight = if salah == Salah::Sunrise { 400 } else { 600 };
-        let row = match state {
-            RowState::Next => next_row(top, frame.now, at, (english, arabic, &time), weight),
-            RowState::Passed => plain_row(top, (english, arabic, &time), weight, MUTED),
-            RowState::Later => plain_row(top, (english, arabic, &time), weight, "#000"),
-        };
-        rows.push_str(&row);
-        top += state.height();
+    let mut cells = String::new();
+    for (index, (salah, at)) in frame.prayers.board(frame.now).into_iter().enumerate() {
+        let (x, top) = cell_position(index);
+        cells += &prayer_cell(
+            frame,
+            x,
+            top,
+            salah,
+            at,
+            weekday,
+            RowState::of(salah, at, upcoming, frame.now),
+        );
     }
-    rows.push_str(&hline(PRAYERS_BOTTOM, 2.0));
-    rows
+    cells += &hline(PRAYERS_BOTTOM + 8.0, 2.0);
+    cells
 }
 
-/// The upcoming time, as a tall card with much larger type than the rest of the
-/// timetable. Its time column sits further right than the plain rows because the
-/// larger prayer names would otherwise collide with the time.
-fn next_row(
+/// Where the n-th prayer sits: two columns of three, filled left to right.
+fn cell_position(index: usize) -> (f64, f64) {
+    let column = index % 2;
+    let row = index / 2;
+    (
+        MARGIN + column as f64 * (COLUMN_WIDTH + COLUMN_GAP),
+        PRAYERS_TOP + row as f64 * PRAYER_ROW,
+    )
+}
+
+fn prayer_cell(
+    frame: &Frame,
+    x: f64,
     top: f64,
-    now: DateTime<Utc>,
+    salah: Salah,
     at: DateTime<Utc>,
-    (english, arabic, time): (&str, &str, &str),
-    weight: u16,
+    weekday: Weekday,
+    state: RowState,
 ) -> String {
-    const SIZE: f64 = 52.0;
-    let baseline = baseline(top, NEXT_PRAYER_ROW, SIZE);
-    [
-        rect(
-            MARGIN - 12.0,
-            top + 4.0,
-            RIGHT - MARGIN + 24.0,
-            NEXT_PRAYER_ROW - 8.0,
-            12.0,
-        ),
-        text(MARGIN, baseline, SIZE as u32, english)
-            .weight(weight)
-            .fill("#fff")
-            .to_string(),
-        text(470.0, baseline, SIZE as u32, time)
-            .weight(700)
-            .end()
-            .fill("#fff")
-            .to_string(),
-        text(484.0, baseline, 24, &countdown(now, at))
-            .weight(600)
-            .fill("#fff")
-            .to_string(),
-        text(RIGHT, baseline, 36, arabic)
-            .weight(weight)
-            .end()
-            .fill("#fff")
-            .to_string(),
-    ]
-    .concat()
-}
-
-fn plain_row(
-    top: f64,
-    (english, arabic, time): (&str, &str, &str),
-    weight: u16,
-    fill: &'static str,
-) -> String {
-    let baseline = baseline(top, PRAYER_ROW, 32.0);
-    [
-        text(MARGIN, baseline, 30, english)
+    let tz = frame.config.location.timezone;
+    let (english, arabic) = salah.names(weekday);
+    let time = format_time(at, tz, frame.config.display.clock);
+    let weight = if salah == Salah::Sunrise { 400 } else { 600 };
+    let fill = match state {
+        RowState::Next => "#fff",
+        RowState::Passed => MUTED,
+        RowState::Later => "#000",
+    };
+    let right = x + COLUMN_WIDTH;
+    let line = baseline(top, PRAYER_ROW, 32.0);
+    let mut cell = String::new();
+    if state == RowState::Next {
+        cell += &rect(
+            x - 8.0,
+            top + 3.0,
+            COLUMN_WIDTH + 16.0,
+            PRAYER_ROW - 8.0,
+            8.0,
+        );
+    }
+    cell += &[
+        text(x, line, 32, english)
             .weight(weight)
             .fill(fill)
             .to_string(),
-        text(330.0, baseline, 32, time)
+        text(right - numeric_width(&time, 28.0) - 14.0, line, 24, arabic)
+            .weight(weight)
+            .end()
+            .fill(fill)
+            .to_string(),
+        text(right, line, 28, &time)
             .weight(700)
             .end()
             .fill(fill)
             .to_string(),
-        text(RIGHT, baseline, 28, arabic)
-            .weight(weight)
-            .end()
-            .fill(fill)
-            .to_string(),
     ]
-    .concat()
+    .concat();
+    cell
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,96 +208,288 @@ impl RowState {
             (false, false) => RowState::Later,
         }
     }
-
-    fn height(self) -> f64 {
-        match self {
-            RowState::Next => NEXT_PRAYER_ROW,
-            RowState::Passed | RowState::Later => PRAYER_ROW,
-        }
-    }
 }
 
 fn weather(frame: &Frame) -> String {
-    const TOP: f64 = PRAYERS_BOTTOM;
     let Some(snapshot) = frame.weather else {
-        return text(WIDTH as f64 / 2.0, TOP + 130.0, 28, "Weather unavailable")
-            .middle()
-            .fill(MUTED)
-            .to_string();
-    };
-    let w = &snapshot.data;
-    let c = &w.current;
-    let tz = frame.config.location.timezone;
-    let clock = frame.config.display.clock;
-    let wind_unit = frame.config.weather.wind_unit.label();
-    let today = frame.now.with_timezone(&tz).date_naive();
-    let range = w
-        .days
-        .iter()
-        .find(|d| d.date == today)
-        .map(|d| format!("H {}  L {}", degrees(d.high), degrees(d.low)));
-    let stale = (frame.now - snapshot.fetched_at > STALE_AFTER)
-        .then(|| format!("as of {}", format_time(snapshot.fetched_at, tz, clock)));
-    let speed = format!("{:.0}", c.wind.speed);
-    let feels = format!(
-        "Feels {} · {}% humidity",
-        degrees(c.feels_like),
-        c.humidity_percent.round()
-    );
-    let hours = next_hours(&w.hours, frame.now, 6)
-        .iter()
-        .enumerate()
-        .map(|(i, hour)| hour_cell(hour, MARGIN + 117.0 * i as f64, TOP + 146.0, tz, clock))
-        .collect::<String>();
-    [
-        icon(c.sky, MARGIN - 6.0, TOP - 2.0, 110.0),
-        text(140.0, TOP + 72.0, 76, &degrees(c.temperature))
-            .weight(700)
-            .to_string(),
-        text(140.0, TOP + 108.0, 26, c.sky.condition.label())
-            .weight(600)
-            .to_string(),
-        text(140.0, TOP + 138.0, 21, &feels).fill(MUTED).to_string(),
-        wind_arrow(c.wind.from_degrees, 452.0, TOP + 6.0, 64.0),
-        text(530.0, TOP + 52.0, 44, &speed).weight(700).to_string(),
-        text(
-            536.0 + numeric_width(&speed, 44.0),
-            TOP + 52.0,
-            24,
-            wind_unit,
+        return text(
+            WIDTH as f64 / 2.0,
+            PRAYERS_BOTTOM + 120.0,
+            28,
+            "Weather unavailable",
         )
-        .to_string(),
-        text(
-            530.0,
-            TOP + 84.0,
-            22,
-            &format!(
+        .middle()
+        .fill(MUTED)
+        .to_string();
+    };
+    if frame.rain_expected() {
+        weather_rain(frame, snapshot)
+    } else {
+        weather_clear(frame, snapshot)
+    }
+}
+
+/// The current conditions, formatted once for both layouts.
+struct Conditions {
+    sky: Sky,
+    temperature: String,
+    label: &'static str,
+    feels: String,
+    speed: String,
+    unit: &'static str,
+    gusts: String,
+    wind_degrees: f64,
+    range: Option<String>,
+}
+
+impl Conditions {
+    fn new(frame: &Frame, w: &Weather) -> Self {
+        let c = &w.current;
+        let tz = frame.config.location.timezone;
+        let today = frame.now.with_timezone(&tz).date_naive();
+        Self {
+            sky: c.sky,
+            temperature: degrees(c.temperature),
+            label: c.sky.condition.label(),
+            feels: format!(
+                "Feels {} · {:.0}% humidity",
+                degrees(c.feels_like),
+                c.humidity_percent
+            ),
+            speed: format!("{:.0}", c.wind.speed),
+            unit: frame.config.weather.wind_unit.label(),
+            gusts: format!(
                 "gusts {:.0} · from {}",
                 c.wind.gust,
                 compass(c.wind.from_degrees)
             ),
-        )
-        .to_string(),
-        range.map_or_else(String::new, |r| {
-            text(530.0, TOP + 118.0, 22, &r).weight(600).to_string()
+            wind_degrees: c.wind.from_degrees,
+            range: w
+                .days
+                .iter()
+                .find(|d| d.date == today)
+                .map(|d| format!("H {}  L {}", degrees(d.high), degrees(d.low))),
+        }
+    }
+}
+
+/// Rain is coming: the current conditions share the lower half with a radar card.
+fn weather_rain(frame: &Frame, snapshot: &Snapshot<Weather>) -> String {
+    let w = &snapshot.data;
+    let c = Conditions::new(frame, w);
+    let tz = frame.config.location.timezone;
+    let clock = frame.config.display.clock;
+    let mut body = next_hours(&w.hours, frame.now, 6)
+        .iter()
+        .enumerate()
+        .map(|(i, hour)| hour_cell(hour, MARGIN + 117.0 * i as f64, HOURLY_TOP, tz, clock))
+        .collect::<String>();
+    body += &hline(566.0, 2.0);
+    body += &[
+        icon(c.sky, MARGIN - 6.0, 588.0, 96.0),
+        text(140.0, 664.0, 82, &c.temperature)
+            .weight(700)
+            .to_string(),
+        text(140.0, 700.0, 30, c.label).weight(600).to_string(),
+        text(140.0, 732.0, 21, &c.feels).fill(MUTED).to_string(),
+        wind_arrow(c.wind_degrees, 36.0, 748.0, 56.0),
+        text(108.0, 792.0, 42, &c.speed).weight(700).to_string(),
+        text(116.0 + numeric_width(&c.speed, 42.0), 792.0, 20, c.unit).to_string(),
+        text(108.0, 828.0, 20, &c.gusts).to_string(),
+        c.range.as_ref().map_or_else(String::new, |r| {
+            text(108.0, 862.0, 24, r).weight(600).to_string()
         }),
-        stale.map_or_else(String::new, |s| {
-            text(RIGHT, TOP + 140.0, 18, &s)
+    ]
+    .concat();
+    body += &tomorrow_compact(w, frame.now, tz);
+    body += &rain_line(frame, w);
+    body += &radar_card(frame);
+    body
+}
+
+/// No rain: the radar is dropped, so the conditions, wind and tomorrow grow.
+fn weather_clear(frame: &Frame, snapshot: &Snapshot<Weather>) -> String {
+    let w = &snapshot.data;
+    let c = Conditions::new(frame, w);
+    let tz = frame.config.location.timezone;
+    let clock = frame.config.display.clock;
+    let mut body = next_hours(&w.hours, frame.now, 6)
+        .iter()
+        .enumerate()
+        .map(|(i, hour)| hour_cell_big(hour, MARGIN + 117.0 * i as f64, HOURLY_TOP, tz, clock))
+        .collect::<String>();
+    body += &hline(606.0, 2.0);
+    body += &[
+        icon(c.sky, MARGIN - 8.0, 612.0, 124.0),
+        text(170.0, 728.0, 124, &c.temperature)
+            .weight(700)
+            .to_string(),
+        text(170.0, 778.0, 42, c.label).weight(600).to_string(),
+        text(170.0, 814.0, 25, &c.feels).fill(MUTED).to_string(),
+        wind_arrow(c.wind_degrees, 470.0, 616.0, 88.0),
+        text(566.0, 700.0, 58, &c.speed).weight(700).to_string(),
+        text(572.0 + numeric_width(&c.speed, 58.0), 700.0, 24, c.unit).to_string(),
+        text(470.0, 738.0, 22, &c.gusts).to_string(),
+        c.range.as_ref().map_or_else(String::new, |r| {
+            text(470.0, 782.0, 32, r).weight(600).to_string()
+        }),
+    ]
+    .concat();
+    body += &hline(840.0, 2.0);
+    body += &tomorrow_wide(w, frame.now, tz);
+    body += &rain_line(frame, w);
+    body
+}
+
+/// The rain outlook, with the data's age tucked into the right corner.
+fn rain_line(frame: &Frame, w: &Weather) -> String {
+    let tz = frame.config.location.timezone;
+    [
+        text(
+            MARGIN,
+            HEIGHT as f64 - 56.0,
+            24,
+            &rain_outlook(&w.quarters, frame.now, tz, frame.config.display.clock),
+        )
+        .weight(600)
+        .to_string(),
+        stale_note(frame).map_or_else(String::new, |s| {
+            text(RIGHT, HEIGHT as f64 - 56.0, 18, &s)
                 .end()
                 .fill(MUTED)
                 .to_string()
         }),
-        hours,
+    ]
+    .concat()
+}
+
+fn stale_note(frame: &Frame) -> Option<String> {
+    let snapshot = frame.weather?;
+    let tz = frame.config.location.timezone;
+    (frame.now - snapshot.fetched_at > STALE_AFTER).then(|| {
+        format!(
+            "as of {}",
+            format_time(snapshot.fetched_at, tz, frame.config.display.clock)
+        )
+    })
+}
+
+/// Tomorrow's range and the sky around midday.
+fn tomorrow(w: &Weather, now: DateTime<Utc>, tz: Tz) -> Option<(&DayRange, &Hour)> {
+    let date = now.with_timezone(&tz).date_naive().succ_opt()?;
+    let day = w.days.iter().find(|d| d.date == date)?;
+    let hour = w
+        .hours
+        .iter()
+        .filter(|h| h.at.with_timezone(&tz).date_naive() == date)
+        .min_by_key(|h| h.at.with_timezone(&tz).hour().abs_diff(13))?;
+    Some((day, hour))
+}
+
+/// Tomorrow as a single line, for the column beside the radar.
+fn tomorrow_compact(w: &Weather, now: DateTime<Utc>, tz: Tz) -> String {
+    let Some((day, hour)) = tomorrow(w, now, tz) else {
+        return String::new();
+    };
+    [
+        icon(hour.sky, MARGIN - 4.0, 884.0, 48.0),
+        text(88.0, 906.0, 22, "Tomorrow")
+            .weight(600)
+            .fill(MUTED)
+            .to_string(),
         text(
-            MARGIN,
-            RADAR_TOP as f64 - 10.0,
-            23,
-            &rain_outlook(&w.quarters, frame.now, tz, clock),
+            88.0,
+            934.0,
+            24,
+            &format!(
+                "{} · H {} L {}",
+                hour.sky.condition.label(),
+                degrees(day.high),
+                degrees(day.low)
+            ),
         )
         .weight(600)
         .to_string(),
     ]
     .concat()
+}
+
+/// Tomorrow across the full width, when no radar is competing for the space.
+fn tomorrow_wide(w: &Weather, now: DateTime<Utc>, tz: Tz) -> String {
+    let Some((day, hour)) = tomorrow(w, now, tz) else {
+        return String::new();
+    };
+    [
+        icon(hour.sky, MARGIN - 4.0, 856.0, 56.0),
+        text(96.0, 884.0, 24, "Tomorrow")
+            .weight(600)
+            .fill(MUTED)
+            .to_string(),
+        text(96.0, 922.0, 32, hour.sky.condition.label())
+            .weight(600)
+            .to_string(),
+        text(
+            RIGHT,
+            922.0,
+            40,
+            &format!("H {}  L {}", degrees(day.high), degrees(day.low)),
+        )
+        .weight(700)
+        .end()
+        .to_string(),
+    ]
+    .concat()
+}
+
+/// The radar card: a bordered square in the bottom-right corner, over the raster
+/// the renderer blits at [`RADAR_LEFT`], [`RADAR_TOP`].
+fn radar_card(frame: &Frame) -> String {
+    let (left, top) = (f64::from(RADAR_LEFT as i32), f64::from(RADAR_TOP as i32));
+    let (width, height) = RADAR_SIZE;
+    let (cx, cy) = (left + f64::from(width) / 2.0, top + f64::from(height) / 2.0);
+    let mut card = format!(
+        r##"<rect x="{}" y="{}" width="{}" height="{}" fill="none" stroke="#000" stroke-width="2"/>"##,
+        left - 2.0,
+        top - 2.0,
+        f64::from(width) + 4.0,
+        f64::from(height) + 4.0
+    );
+    let Some(snapshot) = frame.radar else {
+        card += &text(cx, cy, 24, "Radar unavailable")
+            .middle()
+            .halo()
+            .to_string();
+        return card;
+    };
+    card += &format!(
+        r##"<circle cx="{cx}" cy="{cy}" r="8" fill="#fff" stroke="#000" stroke-width="3"/><circle cx="{cx}" cy="{cy}" r="2.5"/>"##
+    );
+    card += &text(
+        left + 8.0,
+        top + 26.0,
+        22,
+        &format!(
+            "Radar {}",
+            format_time(
+                snapshot.data.observed_at,
+                frame.config.location.timezone,
+                frame.config.display.clock
+            )
+        ),
+    )
+    .weight(700)
+    .halo()
+    .to_string();
+    card += &text(
+        left + f64::from(width) - 4.0,
+        top + f64::from(height) - 8.0,
+        11,
+        "RainViewer · © OpenStreetMap",
+    )
+    .end()
+    .halo()
+    .to_string();
+    card
 }
 
 fn hour_cell(hour: &Hour, x: f64, top: f64, tz: Tz, clock: ClockFormat) -> String {
@@ -306,26 +521,32 @@ fn hour_cell(hour: &Hour, x: f64, top: f64, tz: Tz, clock: ClockFormat) -> Strin
     .concat()
 }
 
-fn radar(frame: &Frame) -> String {
-    let top = RADAR_TOP as f64;
-    let (width, height) = RADAR_SIZE;
-    let (cx, cy) = (f64::from(width) / 2.0, top + f64::from(height) / 2.0);
-    let Some(snapshot) = frame.radar else {
-        return text(cx, cy, 26, "Radar unavailable")
+/// An hourly cell at the size the no-rain layout can afford.
+fn hour_cell_big(hour: &Hour, x: f64, top: f64, tz: Tz, clock: ClockFormat) -> String {
+    let label = match clock {
+        ClockFormat::TwelveHour => hour.at.with_timezone(&tz).format("%-I%P").to_string(),
+        ClockFormat::TwentyFourHour => hour.at.with_timezone(&tz).format("%H:00").to_string(),
+    };
+    let chance = hour
+        .precipitation_chance
+        .filter(|&p| p >= 10.0)
+        .map(|p| format!("{p:.0}%"));
+    let middle = x + 50.0;
+    [
+        text(middle, top + 28.0, 24, &label)
             .middle()
             .fill(MUTED)
-            .to_string();
-    };
-    let tz = frame.config.location.timezone;
-    let observed = format!(
-        "Radar {}",
-        format_time(snapshot.data.observed_at, tz, frame.config.display.clock)
-    );
-    [
-        hline(top, 2.0),
-        format!(r##"<circle cx="{cx}" cy="{cy}" r="9" fill="#fff" stroke="#000" stroke-width="3"/><circle cx="{cx}" cy="{cy}" r="3"/>"##),
-        text(MARGIN - 12.0, top + 30.0, 22, &observed).weight(700).halo().to_string(),
-        text(WIDTH as f64 - 8.0, HEIGHT as f64 - 8.0, 13, "RainViewer · © OpenStreetMap contributors").end().halo().to_string(),
+            .to_string(),
+        icon(hour.sky, middle - 32.0, top + 36.0, 64.0),
+        chance.map_or_else(String::new, |c| {
+            text(middle + 38.0, top + 84.0, 20, &c)
+                .weight(600)
+                .to_string()
+        }),
+        text(middle, top + 132.0, 34, &degrees(hour.temperature))
+            .weight(600)
+            .middle()
+            .to_string(),
     ]
     .concat()
 }
@@ -376,12 +597,9 @@ fn next_hours(hours: &[Hour], now: DateTime<Utc>, count: usize) -> &[Hour] {
     &hours[start..(start + count).min(hours.len())]
 }
 
-/// Precipitation in mm per 15 minutes that counts as rain.
-const WET_MM: f64 = 0.1;
-
 fn rain_outlook(quarters: &[Quarter], now: DateTime<Utc>, tz: Tz, clock: ClockFormat) -> String {
     let start = quarters.partition_point(|q| q.at + Duration::minutes(15) <= now);
-    let window = &quarters[start..(start + 8).min(quarters.len())];
+    let window = &quarters[start..(start + RAIN_QUARTERS).min(quarters.len())];
     let wet = |q: &Quarter| q.precipitation_mm >= WET_MM;
     let at = |q: &Quarter| format_time(q.at, tz, clock);
     let Some(first) = window.first() else {
@@ -663,5 +881,27 @@ mod tests {
                 .to_string()
                 .contains("a&lt;b&amp;c")
         );
+    }
+
+    #[test]
+    fn countdown_hero_shrinks_the_prefix_and_grows_the_numbers() {
+        let hero = countdown_hero(379.0, 268.0, "in 9h 52m");
+        assert!(hero.contains("font-size=\"36\""), "{hero}");
+        assert!(hero.contains("font-size=\"150\""), "{hero}");
+        assert!(hero.contains(">in </tspan>"), "{hero}");
+        assert!(hero.contains(">9h 52m</tspan>"), "{hero}");
+    }
+
+    #[test]
+    fn prayer_cells_fill_two_columns_of_three() {
+        // Six prayers, two columns: the third cell starts a new row.
+        assert_eq!(cell_position(0), (MARGIN, PRAYERS_TOP));
+        assert_eq!(
+            cell_position(1).0,
+            MARGIN + COLUMN_WIDTH + COLUMN_GAP,
+            "the second column starts after the first"
+        );
+        assert_eq!(cell_position(2), (MARGIN, PRAYERS_TOP + PRAYER_ROW));
+        assert_eq!(cell_position(5).1, PRAYERS_TOP + 2.0 * PRAYER_ROW);
     }
 }
