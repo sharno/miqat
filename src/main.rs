@@ -1,13 +1,5 @@
-mod config;
-mod hijri;
-mod image;
-mod layout;
-mod prayer;
-mod radar;
-mod render;
+use miqat::{config, layout, prayer, render, sources};
 mod server;
-mod sources;
-mod weather;
 
 use std::path::PathBuf;
 

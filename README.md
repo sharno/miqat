@@ -17,6 +17,10 @@ It shows:
 
 ## How it works
 
+The rendering engine is also available as a Rust library (`miqat::layout`,
+`miqat::prayer`, `miqat::render`, and `miqat::sources`). Kindil can therefore
+reuse the exact dashboard without copying its layout or changing the server CLI.
+
 ```
 home server (miqat serve)                         Kindle (KUAL extension)
   Open-Meteo  ─┐                                    every minute:
