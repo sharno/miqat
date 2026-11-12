@@ -29,6 +29,7 @@ zoom = 8                        # 3..=9; each step halves the width (8 ≈ 150 k
 
 [display]
 clock = "24h"                   # 12h | 24h
+contrast = 1.5                  # 1.0 = unmodified; higher darkens the midtones
 
 [server]
 listen = "0.0.0.0:8080"

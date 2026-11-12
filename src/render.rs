@@ -3,6 +3,7 @@
 use anyhow::Context;
 use resvg::{tiny_skia, usvg};
 
+use crate::config::Contrast;
 use crate::image::{Gray, luma_over_white};
 use crate::layout::{self, Frame};
 
@@ -14,19 +15,18 @@ const FONTS: [&[u8]; 3] = [
 
 pub struct Renderer {
     options: usvg::Options<'static>,
+    contrast: Contrast,
 }
 
-impl Default for Renderer {
-    fn default() -> Self {
+impl Renderer {
+    pub fn new(contrast: Contrast) -> Self {
         let mut options = usvg::Options::default();
         FONTS
             .iter()
             .for_each(|font| options.fontdb_mut().load_font_data(font.to_vec()));
-        Self { options }
+        Self { options, contrast }
     }
-}
 
-impl Renderer {
     pub fn png(&self, frame: &Frame) -> anyhow::Result<Vec<u8>> {
         self.gray(frame)?.encode_png()
     }
@@ -58,7 +58,10 @@ impl Renderer {
             pixels: pixmap
                 .pixels()
                 .iter()
-                .map(|p| quantize(luma_over_white([p.red(), p.green(), p.blue(), p.alpha()])))
+                .map(|p| {
+                    let luma = luma_over_white([p.red(), p.green(), p.blue(), p.alpha()]);
+                    quantize(self.contrast.darken(luma))
+                })
                 .collect(),
         })
     }

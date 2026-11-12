@@ -231,6 +231,43 @@ impl TryFrom<u8> for Zoom {
 #[serde(deny_unknown_fields, default)]
 pub struct DisplayConfig {
     pub clock: ClockFormat,
+    pub contrast: Contrast,
+}
+
+/// How hard the mid-tones are darkened before the frame reaches the paperwhite.
+///
+/// The panel has 16 gray levels and lifts the middle of the range well above
+/// their 8-bit value, so a `#666` label reads as pale haze rather than text.
+/// This is the gamma applied to the frame to cancel that lift: black and white
+/// stay put and everything between them comes down.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Deserialize)]
+#[serde(try_from = "f64")]
+pub struct Contrast(f64);
+
+impl Default for Contrast {
+    fn default() -> Self {
+        Self(1.5)
+    }
+}
+
+impl Contrast {
+    /// The gamma applied to an 8-bit gray value. 1.0 leaves it alone; higher
+    /// values pull the midtones down toward black while leaving black and
+    /// white where they are.
+    pub fn darken(self, value: u8) -> u8 {
+        let scaled = f64::from(value) / 255.0;
+        (255.0 * scaled.powf(self.0)).round() as u8
+    }
+}
+
+impl TryFrom<f64> for Contrast {
+    type Error = String;
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        (1.0..=3.0)
+            .contains(&value)
+            .then_some(Self(value))
+            .ok_or_else(|| format!("display contrast {value} is outside 1.0..=3.0"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -275,5 +312,28 @@ mod tests {
         assert!(toml::from_str::<Config>(&zoom).is_err());
         let tz = base.replace("91.0", "30.0").replace("UTC", "Mars/Olympus");
         assert!(toml::from_str::<Config>(&tz).is_err());
+        let contrast = base.replace("91.0", "30.0") + "[display]\ncontrast = 0.5\n";
+        assert!(toml::from_str::<Config>(&contrast).is_err());
+    }
+
+    #[test]
+    fn contrast_keeps_the_ends_and_darkens_the_middle() {
+        let contrast = Contrast::default();
+        assert_eq!(contrast.darken(0), 0);
+        assert_eq!(contrast.darken(255), 255);
+        // The panel lifts midtones, so the curve has to pull them down.
+        assert!(contrast.darken(102) < 102);
+        // Monotonic, so the 16 levels stay in order.
+        let levels: Vec<u8> = (0..=255).map(|v| contrast.darken(v)).collect();
+        assert!(levels.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn contrast_of_one_is_a_no_op() {
+        let contrast = Contrast::try_from(1.0).unwrap();
+        assert_eq!(
+            (0..=255).map(|v| contrast.darken(v)).collect::<Vec<u8>>(),
+            (0..=255).collect::<Vec<u8>>()
+        );
     }
 }

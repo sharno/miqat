@@ -107,6 +107,7 @@ See [`config.example.toml`](config.example.toml):
 | `weather.temperature_unit` / `wind_unit` | `celsius`/`fahrenheit`; `kmh`/`ms`/`mph`/`kn` |
 | `radar.zoom` | 3–9, default 8 (~150 km across). Radar past 7 is RainViewer's zoom-7 data upscaled, since its free tiles stop there |
 | `display.clock` | `12h`, `24h` |
+| `display.contrast` | 1.0–3.0, default 1.5. The e-ink panel has 16 gray levels and lifts the middle of the range, so the frame is darkened with this gamma to compensate. Raise it if the text still looks washed out |
 
 ## Data and credits
 

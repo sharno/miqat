@@ -19,7 +19,7 @@ impl App {
     pub fn new(config: &Config) -> Self {
         Self {
             sources: Sources::new(config),
-            renderer: Renderer::default(),
+            renderer: Renderer::new(config.display.contrast),
         }
     }
 
